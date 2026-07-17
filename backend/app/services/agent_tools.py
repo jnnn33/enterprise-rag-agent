@@ -1,11 +1,13 @@
 from typing import Any, Protocol
 
+from app.domain.agent import ToolRisk
 from app.services.rag import RagService
 
 
 class AgentTool(Protocol):
     name: str
     description: str
+    risk_level: ToolRisk
 
     def execute(self, arguments: dict[str, Any]) -> dict[str, Any]: ...
 
@@ -31,6 +33,7 @@ class ToolRegistry:
 class KnowledgeAnswerTool:
     name = "knowledge_answer"
     description = "Answer a question from the indexed enterprise knowledge base."
+    risk_level = ToolRisk.READ
 
     def __init__(self, rag_service: RagService) -> None:
         self._rag_service = rag_service

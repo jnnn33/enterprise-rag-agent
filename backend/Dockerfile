@@ -8,7 +8,7 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY backend ./backend
 
-RUN python -m pip install --no-cache-dir .
+RUN python -m pip install --no-cache-dir ".[mcp,milvus]"
 
 EXPOSE 8000
 

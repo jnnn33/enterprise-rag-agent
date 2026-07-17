@@ -4,6 +4,12 @@ from enum import StrEnum
 from typing import Any
 
 
+class ToolRisk(StrEnum):
+    READ = "read"
+    WRITE = "write"
+    EXTERNAL = "external"
+
+
 class AgentRunStatus(StrEnum):
     AWAITING_CONFIRMATION = "awaiting_confirmation"
     CONFIRMED = "confirmed"
@@ -26,6 +32,7 @@ class AgentAction:
     tool_name: str
     arguments: dict[str, Any]
     preview: str
+    risk_level: ToolRisk = ToolRisk.READ
     requires_approval: bool = True
     status: AgentActionStatus = AgentActionStatus.PENDING
     result: dict[str, Any] | None = None

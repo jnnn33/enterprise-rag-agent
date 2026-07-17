@@ -8,6 +8,7 @@ from app.domain.agent import (
     AgentEvent,
     AgentRun,
     AgentRunStatus,
+    ToolRisk,
 )
 
 
@@ -55,9 +56,10 @@ class SQLiteAgentRunRepository:
                 """
                 INSERT INTO agent_actions (
                     id, run_id, position, tool_name, arguments_json,
-                    preview, requires_approval, status, attempt_count, result_json, error
+                    preview, risk_level, requires_approval, status,
+                    attempt_count, result_json, error
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -67,6 +69,7 @@ class SQLiteAgentRunRepository:
                         action.tool_name,
                         self._dump_json(action.arguments),
                         action.preview,
+                        action.risk_level.value,
                         int(action.requires_approval),
                         action.status.value,
                         action.attempt_count,
@@ -116,7 +119,8 @@ class SQLiteAgentRunRepository:
             action_rows = connection.execute(
                 """
                 SELECT id, tool_name, arguments_json, preview,
-                       requires_approval, status, attempt_count, result_json, error
+                       risk_level, requires_approval, status, attempt_count,
+                       result_json, error
                 FROM agent_actions
                 WHERE run_id = ?
                 ORDER BY position
@@ -183,6 +187,7 @@ class SQLiteAgentRunRepository:
                     tool_name TEXT NOT NULL,
                     arguments_json TEXT NOT NULL,
                     preview TEXT NOT NULL,
+                    risk_level TEXT NOT NULL DEFAULT 'write',
                     requires_approval INTEGER NOT NULL,
                     status TEXT NOT NULL,
                     attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -217,6 +222,30 @@ class SQLiteAgentRunRepository:
             }
             if "attempt_count" not in columns:
                 connection.execute("ALTER TABLE agent_actions ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0")
+            if "risk_level" not in columns:
+                connection.execute(
+                    "ALTER TABLE agent_actions ADD COLUMN "
+                    "risk_level TEXT NOT NULL DEFAULT 'write'"
+                )
+            connection.execute(
+                """
+                UPDATE agent_actions
+                SET risk_level = CASE tool_name
+                    WHEN 'knowledge_answer' THEN 'read'
+                    WHEN 'candidate_brief' THEN 'read'
+                    WHEN 'interview_feedback' THEN 'read'
+                    WHEN 'create_recruiting_task' THEN 'write'
+                    WHEN 'update_work_item_status' THEN 'write'
+                    WHEN 'feishu_notify' THEN 'external'
+                    ELSE risk_level
+                END
+                WHERE tool_name IN (
+                    'knowledge_answer', 'candidate_brief',
+                    'interview_feedback', 'create_recruiting_task',
+                    'update_work_item_status', 'feishu_notify'
+                )
+                """
+            )
 
     @staticmethod
     def _dump_json(value: dict | None) -> str | None:
@@ -246,6 +275,7 @@ class SQLiteAgentRunRepository:
             tool_name=row["tool_name"],
             arguments=cls._load_json(row["arguments_json"]) or {},
             preview=row["preview"],
+            risk_level=ToolRisk(row["risk_level"]),
             requires_approval=bool(row["requires_approval"]),
             status=AgentActionStatus(row["status"]),
             attempt_count=row["attempt_count"],

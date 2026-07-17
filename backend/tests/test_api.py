@@ -73,3 +73,15 @@ def test_chat_rejects_unrelated_evidence_from_populated_knowledge_base(
     assert response.status_code == 200
     assert response.json()["citations"] == []
     assert response.json()["trace"]["returned_count"] == 0
+
+
+def test_provider_status_reports_offline_defaults(client: TestClient) -> None:
+    response = client.get("/api/v1/providers")
+
+    assert response.status_code == 200
+    providers = {item["component"]: item for item in response.json()}
+    assert providers["vector_store"]["provider"] == "qdrant"
+    assert providers["embedding"]["mode"] == "offline"
+    assert providers["llm"]["provider"] == "extractive"
+    assert providers["reranker"]["provider"] == "heuristic"
+    assert providers["mcp"]["configured"] is False

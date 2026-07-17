@@ -30,7 +30,9 @@ class Conversation:
 
 class WorkItemStatus(StrEnum):
     OPEN = "open"
+    IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
+    CANCELLED = "cancelled"
 
 
 @dataclass(frozen=True, slots=True)

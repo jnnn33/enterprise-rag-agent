@@ -1,3 +1,5 @@
+from collections.abc import Iterator
+from typing import Any
 from uuid import uuid4
 
 from app.domain.workspace import (
@@ -7,7 +9,7 @@ from app.domain.workspace import (
 )
 from app.repositories.workspace import WorkspaceRepository
 from app.schemas.chat import ChatResponse
-from app.services.rag import RagService
+from app.services.rag import RagService, RagStreamEvent
 
 
 class ConversationNotFoundError(LookupError):
@@ -49,56 +51,102 @@ class ConversationService:
         question: str,
         top_k: int | None = None,
     ) -> tuple[Conversation, ChatResponse]:
-        conversation = self.get(conversation_id)
-        user_message = ConversationMessage(
-            id=str(uuid4()),
-            conversation_id=conversation_id,
-            role=MessageRole.USER,
-            content=question,
+        retrieval_query = self._save_user_and_build_query(
+            conversation_id,
+            question,
         )
-        self._repository.add_message(user_message)
-
-        recent_questions = [
-            message.content
-            for message in conversation.messages
-            if message.role == MessageRole.USER
-        ][-1:]
-        retrieval_query = question
-        if recent_questions and self._needs_previous_question(question):
-            retrieval_query = f"{recent_questions[0]}\n{question}"
         response = self._rag_service.answer(
             question,
             top_k=top_k,
             retrieval_query=retrieval_query,
         )
-        assistant_message = ConversationMessage(
-            id=str(uuid4()),
-            conversation_id=conversation_id,
-            role=MessageRole.ASSISTANT,
-            content=response.answer,
-            metadata={
-                "citations": [
-                    citation.model_dump(mode="json")
-                    for citation in response.citations
-                ],
-                "trace": response.trace.model_dump(mode="json"),
-                "display_question": question,
-            },
-        )
-        self._repository.add_message(assistant_message)
+        self._save_assistant(conversation_id, question, response)
         return self.get(conversation_id), response
+
+    def stream_ask(
+        self,
+        conversation_id: str,
+        question: str,
+        top_k: int | None = None,
+    ) -> Iterator[RagStreamEvent]:
+        retrieval_query = self._save_user_and_build_query(
+            conversation_id,
+            question,
+        )
+        for event in self._rag_service.stream_answer(
+            question,
+            top_k=top_k,
+            retrieval_query=retrieval_query,
+        ):
+            if event["event"] == "complete":
+                response = ChatResponse.model_validate(event["data"]["response"])
+                self._save_assistant(conversation_id, question, response)
+                event = {
+                    "event": "complete",
+                    "data": {
+                        **event["data"],
+                        "conversation_id": conversation_id,
+                    },
+                }
+            yield event
+
+    def _save_user_and_build_query(
+        self,
+        conversation_id: str,
+        question: str,
+    ) -> str:
+        conversation = self.get(conversation_id)
+        self._repository.add_message(
+            ConversationMessage(
+                id=str(uuid4()),
+                conversation_id=conversation_id,
+                role=MessageRole.USER,
+                content=question,
+            )
+        )
+        recent_questions = [
+            message.content
+            for message in conversation.messages
+            if message.role == MessageRole.USER
+        ][-1:]
+        if recent_questions and self._needs_previous_question(question):
+            return f"{recent_questions[0]}\n{question}"
+        return question
+
+    def _save_assistant(
+        self,
+        conversation_id: str,
+        question: str,
+        response: ChatResponse,
+    ) -> None:
+        self._repository.add_message(
+            ConversationMessage(
+                id=str(uuid4()),
+                conversation_id=conversation_id,
+                role=MessageRole.ASSISTANT,
+                content=response.answer,
+                metadata={
+                    "citations": [
+                        citation.model_dump(mode="json")
+                        for citation in response.citations
+                    ],
+                    "trace": response.trace.model_dump(mode="json"),
+                    "display_question": question,
+                },
+            )
+        )
 
     @staticmethod
     def _needs_previous_question(question: str) -> bool:
         normalized = question.strip().lower()
-        follow_up_markers = (
+        follow_up_markers: tuple[str, ...] = (
             "它",
             "这个",
             "这项",
             "该项",
             "上述",
             "前面",
-            "那",
+            "那个",
             "其中",
             "对此",
             "还有",
