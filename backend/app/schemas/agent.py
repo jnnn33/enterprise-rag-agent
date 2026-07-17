@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 class AgentRunCreate(BaseModel):
     objective: str = Field(min_length=1, max_length=2000)
-    skill_name: str = Field(default="knowledge_qa", min_length=1, max_length=100)
+    skill_name: str | None = Field(default=None, min_length=1, max_length=100)
     inputs: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -19,6 +19,7 @@ class AgentActionResponse(BaseModel):
     tool_name: str
     arguments: dict[str, Any]
     preview: str
+    risk_level: str
     requires_approval: bool
     status: str
     result: dict[str, Any] | None
@@ -29,6 +30,7 @@ class AgentActionResponse(BaseModel):
 class AgentCapabilityResponse(BaseModel):
     name: str
     description: str
+    risk_level: str | None = None
 
 
 class AgentEventResponse(BaseModel):

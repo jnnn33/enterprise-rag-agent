@@ -1,13 +1,20 @@
 from dataclasses import dataclass
 
 from app.core.config import Settings
+from app.repositories.milvus_index import MilvusVectorIndex
 from app.repositories.qdrant_index import QdrantVectorIndex
 from app.repositories.sqlite_agent_runs import SQLiteAgentRunRepository
 from app.repositories.sqlite_knowledge import SQLiteKnowledgeRepository
 from app.repositories.sqlite_workspace import SQLiteWorkspaceRepository
 from app.repositories.vector_index import VectorIndex
 from app.services.agent_runtime import AgentRuntime
-from app.services.agent_skills import HRRecruitingSkill, KnowledgeQASkill, SkillRegistry
+from app.services.agent_orchestration import ExecutionPolicy, RegistryPlanner, RuleBasedTaskRouter
+from app.services.agent_skills import (
+    HRRecruitingSkill,
+    KnowledgeQASkill,
+    MCPToolSkill,
+    SkillRegistry,
+)
 from app.services.agent_tools import KnowledgeAnswerTool, ToolRegistry
 from app.services.conversations import ConversationService
 from app.services.integrations import FeishuGateway, FeishuWebhookGateway
@@ -19,6 +26,10 @@ from app.services.recruiting_tools import (
     InterviewFeedbackTool,
 )
 from app.services.workspace import WorkspaceService
+from app.services.workspace_tools import (
+    UpdateWorkItemStatusTool,
+    WorkspaceManagementSkill,
+)
 from app.services.answer_generation import (
     AnswerGenerator,
     ExtractiveAnswerGenerator,
@@ -34,13 +45,18 @@ from app.services.embeddings import (
 )
 from app.services.hybrid_retrieval import HybridRetriever
 from app.services.knowledge import KnowledgeService
+from app.services.mcp_client import MCPClientService
 from app.services.query_rewrite import (
     IdentityQueryRewriter,
     LLMQueryRewriter,
     QueryRewriter,
 )
 from app.services.rag import RagService
-from app.services.reranking import HeuristicReranker, Reranker
+from app.services.reranking import (
+    HeuristicReranker,
+    OpenAICompatibleReranker,
+    Reranker,
+)
 from app.services.retrieval import KeywordRetriever
 
 
@@ -54,6 +70,8 @@ class ApplicationContainer:
     workspace_service: WorkspaceService
     evaluation_service: RagEvaluationService
     feishu_gateway: FeishuGateway
+    mcp_service: MCPClientService
+    provider_status: list[dict[str, str | bool | int]]
 
 
 def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
@@ -70,6 +88,26 @@ def build_embedding_provider(settings: Settings) -> EmbeddingProvider:
     raise ValueError(
         "EMBEDDING_PROVIDER must be 'hash' or 'openai_compatible'"
     )
+
+
+def build_vector_index(settings: Settings, dimension: int) -> VectorIndex:
+    provider_name = settings.vector_store_provider.strip().lower()
+    if provider_name == "qdrant":
+        return QdrantVectorIndex(
+            path=settings.qdrant_path,
+            collection_name=settings.qdrant_collection,
+            dimension=dimension,
+            score_threshold=settings.vector_score_threshold,
+        )
+    if provider_name == "milvus":
+        return MilvusVectorIndex(
+            uri=settings.milvus_uri,
+            token=settings.milvus_token,
+            collection_name=settings.milvus_collection,
+            dimension=dimension,
+            score_threshold=settings.vector_score_threshold,
+        )
+    raise ValueError("VECTOR_STORE_PROVIDER must be 'qdrant' or 'milvus'")
 
 
 def build_chat_model(settings: Settings) -> ChatModel | None:
@@ -113,7 +151,67 @@ def build_reranker(settings: Settings) -> Reranker:
     provider_name = settings.reranker_provider.strip().lower()
     if provider_name == "heuristic":
         return HeuristicReranker()
-    raise ValueError("RERANKER_PROVIDER must be 'heuristic'")
+    if provider_name == "openai_compatible":
+        return OpenAICompatibleReranker(
+            base_url=settings.reranker_base_url,
+            api_key=settings.reranker_api_key,
+            model=settings.reranker_model,
+        )
+    raise ValueError(
+        "RERANKER_PROVIDER must be 'heuristic' or 'openai_compatible'"
+    )
+
+
+def build_provider_status(
+    settings: Settings,
+    mcp_service: MCPClientService,
+) -> list[dict[str, str | bool | int]]:
+    llm_remote = settings.llm_provider == "openai_compatible"
+    embedding_remote = settings.embedding_provider == "openai_compatible"
+    reranker_remote = settings.reranker_provider == "openai_compatible"
+    mcp_servers = mcp_service.list_servers()
+    return [
+        {
+            "component": "vector_store",
+            "provider": settings.vector_store_provider,
+            "configured": bool(
+                settings.qdrant_path
+                if settings.vector_store_provider == "qdrant"
+                else settings.milvus_uri
+            ),
+            "mode": "local"
+            if settings.vector_store_provider == "qdrant"
+            else "local_or_remote",
+        },
+        {
+            "component": "embedding",
+            "provider": settings.embedding_provider,
+            "configured": not embedding_remote
+            or bool(settings.embedding_base_url and settings.embedding_model),
+            "mode": "remote" if embedding_remote else "offline",
+        },
+        {
+            "component": "llm",
+            "provider": settings.llm_provider,
+            "configured": not llm_remote
+            or bool(settings.llm_base_url and settings.llm_model),
+            "mode": "remote" if llm_remote else "offline",
+        },
+        {
+            "component": "reranker",
+            "provider": settings.reranker_provider,
+            "configured": not reranker_remote
+            or bool(settings.reranker_base_url and settings.reranker_model),
+            "mode": "remote" if reranker_remote else "offline",
+        },
+        {
+            "component": "mcp",
+            "provider": "official_sdk",
+            "configured": bool(mcp_servers),
+            "mode": "enabled" if mcp_servers else "disabled",
+            "server_count": len(mcp_servers),
+        },
+    ]
 
 
 def build_container(settings: Settings) -> ApplicationContainer:
@@ -123,12 +221,8 @@ def build_container(settings: Settings) -> ApplicationContainer:
         overlap=settings.chunk_overlap,
     )
     embedding_provider = build_embedding_provider(settings)
-    vector_index = QdrantVectorIndex(
-        path=settings.qdrant_path,
-        collection_name=settings.qdrant_collection,
-        dimension=embedding_provider.dimension,
-        score_threshold=settings.vector_score_threshold,
-    )
+    vector_index = build_vector_index(settings, embedding_provider.dimension)
+
     existing_chunks = repository.list_chunks()
     if existing_chunks:
         vector_index.upsert(
@@ -170,17 +264,36 @@ def build_container(settings: Settings) -> ApplicationContainer:
     )
     workspace_service = WorkspaceService(workspace_repository)
     evaluation_service = RagEvaluationService(rag_service)
+    mcp_service = MCPClientService.from_json(settings.mcp_servers_json)
+    mcp_tools = mcp_service.discover_tools()
+    skill_list = [
+        KnowledgeQASkill(),
+        HRRecruitingSkill(),
+        WorkspaceManagementSkill(workspace_repository),
+    ]
+    if mcp_tools:
+        skill_list.append(MCPToolSkill({tool.name for tool in mcp_tools}))
+    skills = SkillRegistry(skill_list)
+    tools = ToolRegistry(
+        [
+            KnowledgeAnswerTool(rag_service),
+            CandidateBriefTool(),
+            InterviewFeedbackTool(),
+            CreateRecruitingTaskTool(workspace_repository),
+            FeishuNotifyTool(feishu_gateway),
+            UpdateWorkItemStatusTool(workspace_repository),
+            *mcp_tools,
+        ]
+    )
     agent_runtime = AgentRuntime(
         repository=SQLiteAgentRunRepository(settings.database_path),
-        skills=SkillRegistry([KnowledgeQASkill(), HRRecruitingSkill()]),
-        tools=ToolRegistry(
-            [
-                KnowledgeAnswerTool(rag_service),
-                CandidateBriefTool(),
-                InterviewFeedbackTool(),
-                CreateRecruitingTaskTool(workspace_repository),
-                FeishuNotifyTool(feishu_gateway),
-            ]
+        skills=skills,
+        tools=tools,
+        router=RuleBasedTaskRouter(skills),
+        planner=RegistryPlanner(skills, tools),
+        policy=ExecutionPolicy(
+            tools,
+            auto_approve_read_actions=settings.auto_approve_read_actions,
         ),
     )
     return ApplicationContainer(
@@ -192,5 +305,7 @@ def build_container(settings: Settings) -> ApplicationContainer:
         workspace_service=workspace_service,
         feishu_gateway=feishu_gateway,
         evaluation_service=evaluation_service,
+        mcp_service=mcp_service,
+        provider_status=build_provider_status(settings, mcp_service),
     )
 

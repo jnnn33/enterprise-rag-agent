@@ -1,3 +1,4 @@
+from dataclasses import replace
 import json
 from pathlib import Path
 import sqlite3
@@ -8,6 +9,10 @@ from app.domain.workspace import (
     MessageRole,
     WorkItem,
     WorkItemStatus,
+)
+from app.repositories.workspace import (
+    WorkItemConflictError,
+    WorkItemNotFoundError,
 )
 
 
@@ -128,6 +133,58 @@ class SQLiteWorkspaceRepository:
                 """
             ).fetchall()
         return [self._row_to_work_item(row) for row in rows]
+
+    def get_work_item(self, item_id: str) -> WorkItem | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, kind, title, description, owner, status,
+                       metadata_json, created_at
+                FROM work_items
+                WHERE id = ?
+                """,
+                (item_id,),
+            ).fetchone()
+        return self._row_to_work_item(row) if row is not None else None
+
+    def update_work_item_status(
+        self,
+        item_id: str,
+        status: WorkItemStatus,
+        expected_status: WorkItemStatus,
+    ) -> tuple[WorkItem, bool]:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, kind, title, description, owner, status,
+                       metadata_json, created_at
+                FROM work_items
+                WHERE id = ?
+                """,
+                (item_id,),
+            ).fetchone()
+            if row is None:
+                raise WorkItemNotFoundError(f"work item not found: {item_id}")
+            current = self._row_to_work_item(row)
+            if current.status == status:
+                return current, False
+            if current.status != expected_status:
+                raise WorkItemConflictError(
+                    "work item changed after preview; create a new preview"
+                )
+            cursor = connection.execute(
+                """
+                UPDATE work_items
+                SET status = ?
+                WHERE id = ? AND status = ?
+                """,
+                (status.value, item_id, expected_status.value),
+            )
+            if cursor.rowcount != 1:
+                raise WorkItemConflictError(
+                    "work item changed during execution; create a new preview"
+                )
+        return replace(current, status=status), True
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._database_path, timeout=5)

@@ -58,6 +58,7 @@ export type AgentAction = {
   tool_name: string;
   arguments: Record<string, unknown>;
   preview: string;
+  risk_level: "read" | "write" | "external";
   requires_approval: boolean;
   status: string;
   result: Record<string, unknown> | null;
@@ -86,7 +87,19 @@ export type AgentRun = {
   updated_at: string;
 };
 
-export type Capability = { name: string; description: string };
+export type Capability = {
+  name: string;
+  description: string;
+  risk_level?: "read" | "write" | "external";
+};
+
+export type ProviderStatus = {
+  component: string;
+  provider: string;
+  configured: boolean;
+  mode: string;
+  server_count?: number;
+};
 
 export type WorkItem = {
   id: string;

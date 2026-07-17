@@ -22,7 +22,11 @@ from app.services.query_rewrite import (
     IdentityQueryRewriter,
     LLMQueryRewriter,
 )
-from app.services.reranking import HeuristicReranker
+from app.services.reranking import (
+    HeuristicReranker,
+    OpenAICompatibleReranker,
+    RerankerError,
+)
 
 
 class FakeResponse:
@@ -197,3 +201,73 @@ def test_heuristic_reranker_requires_mixed_language_term_match() -> None:
     )
 
     assert hits == []
+
+
+def test_http_reranker_sends_documents_and_maps_scores() -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_post(url: str, **kwargs: Any) -> FakeResponse:
+        captured["url"] = url
+        captured.update(kwargs)
+        return FakeResponse(
+            {
+                "results": [
+                    {"index": 1, "relevance_score": 0.95},
+                    {"index": 0, "relevance_score": 0.25},
+                ]
+            }
+        )
+
+    reranker = OpenAICompatibleReranker(
+        base_url="https://reranker.example/v1",
+        api_key="secret",
+        model="example-reranker",
+        post=fake_post,
+    )
+    hits = reranker.rerank(
+        query="travel limit",
+        hits=[
+            _hit("one", "employee birthday benefit"),
+            _hit("two", "travel reimbursement limit"),
+        ],
+        top_k=1,
+    )
+
+    assert [hit.chunk.id for hit in hits] == ["two"]
+    assert hits[0].score == 0.95
+    assert captured["url"] == "https://reranker.example/v1/rerank"
+    assert captured["headers"]["Authorization"] == "Bearer secret"
+    assert captured["json"] == {
+        "model": "example-reranker",
+        "query": "travel limit",
+        "documents": [
+            "employee birthday benefit",
+            "travel reimbursement limit",
+        ],
+        "top_n": 1,
+    }
+
+
+def test_http_reranker_rejects_invalid_result_index() -> None:
+    reranker = OpenAICompatibleReranker(
+        base_url="https://reranker.example/v1",
+        model="example-reranker",
+        post=lambda *args, **kwargs: FakeResponse(
+            {"results": [{"index": 4, "relevance_score": 0.9}]}
+        ),
+    )
+
+    with pytest.raises(RerankerError, match="invalid index"):
+        reranker.rerank("question", [_hit("one", "context")], top_k=1)
+
+
+def test_reranker_factory_builds_http_adapter() -> None:
+    reranker = build_reranker(
+        Settings(
+            reranker_provider="openai_compatible",
+            reranker_base_url="https://reranker.example/v1",
+            reranker_model="example-reranker",
+        )
+    )
+
+    assert isinstance(reranker, OpenAICompatibleReranker)

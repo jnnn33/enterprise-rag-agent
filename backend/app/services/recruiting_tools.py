@@ -1,6 +1,7 @@
 from typing import Any
 from uuid import uuid4
 
+from app.domain.agent import ToolRisk
 from app.domain.workspace import WorkItem, WorkItemStatus
 from app.repositories.workspace import WorkspaceRepository
 from app.services.integrations import FeishuGateway
@@ -9,6 +10,7 @@ from app.services.integrations import FeishuGateway
 class CandidateBriefTool:
     name = "candidate_brief"
     description = "Create a structured candidate brief from interview notes."
+    risk_level = ToolRisk.READ
 
     def execute(self, arguments: dict[str, Any]) -> dict[str, Any]:
         candidate = self._required(arguments, "candidate_name")
@@ -36,6 +38,7 @@ class CandidateBriefTool:
 class InterviewFeedbackTool:
     name = "interview_feedback"
     description = "Turn interviewer notes into structured hiring feedback."
+    risk_level = ToolRisk.READ
 
     def execute(self, arguments: dict[str, Any]) -> dict[str, Any]:
         candidate = CandidateBriefTool._required(arguments, "candidate_name")
@@ -53,6 +56,7 @@ class InterviewFeedbackTool:
 class CreateRecruitingTaskTool:
     name = "create_recruiting_task"
     description = "Create a persistent recruiting follow-up work item."
+    risk_level = ToolRisk.WRITE
 
     def __init__(self, repository: WorkspaceRepository) -> None:
         self._repository = repository
@@ -82,6 +86,7 @@ class CreateRecruitingTaskTool:
 class FeishuNotifyTool:
     name = "feishu_notify"
     description = "Send an approved recruiting update through Feishu."
+    risk_level = ToolRisk.EXTERNAL
 
     def __init__(self, gateway: FeishuGateway) -> None:
         self._gateway = gateway

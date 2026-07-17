@@ -39,6 +39,7 @@ def _to_response(run: AgentRun) -> AgentRunResponse:
                 tool_name=action.tool_name,
                 arguments=action.arguments,
                 preview=action.preview,
+                risk_level=action.risk_level.value,
                 requires_approval=action.requires_approval,
                 status=action.status.value,
                 result=action.result,
@@ -138,7 +139,8 @@ async def reject_run(
 @router.post("/runs/{run_id}/execute", response_model=AgentRunResponse)
 async def execute_run(run_id: str, container: Container) -> AgentRunResponse:
     try:
-        return _to_response(container.agent_runtime.execute(run_id))
+        run = await asyncio.to_thread(container.agent_runtime.execute, run_id)
+        return _to_response(run)
     except (AgentRunNotFoundError, InvalidAgentStateError) as exc:
         _raise_runtime_http_error(exc)
         raise AssertionError("unreachable")

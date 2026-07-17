@@ -1,8 +1,11 @@
+import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 
 from app.api.dependencies import get_container
+from app.api.sse import stream_sse
 from app.core.container import ApplicationContainer
 from app.domain.workspace import Conversation
 from app.schemas.conversations import (
@@ -79,14 +82,37 @@ async def ask_in_conversation(
     container: Container,
 ) -> ConversationAskResponse:
     try:
-        conversation, response = container.conversation_service.ask(
-            conversation_id=conversation_id,
-            question=payload.question,
-            top_k=payload.top_k,
+        conversation, response = await asyncio.to_thread(
+            container.conversation_service.ask,
+            conversation_id,
+            payload.question,
+            payload.top_k,
         )
     except ConversationNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ConversationAskResponse(
         conversation=_to_response(conversation),
         response=response,
+    )
+
+
+@router.post("/{conversation_id}/messages/stream")
+async def stream_in_conversation(
+    conversation_id: str,
+    payload: ConversationAskRequest,
+    container: Container,
+) -> StreamingResponse:
+    try:
+        container.conversation_service.get(conversation_id)
+    except ConversationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    events = container.conversation_service.stream_ask(
+        conversation_id=conversation_id,
+        question=payload.question,
+        top_k=payload.top_k,
+    )
+    return StreamingResponse(
+        stream_sse(events),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

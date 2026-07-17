@@ -7,8 +7,16 @@ from app.domain.agent import (
     AgentEvent,
     AgentRun,
     AgentRunStatus,
+    ToolRisk,
 )
 from app.repositories.agent_runs import AgentRunRepository
+from app.services.agent_orchestration import (
+    ExecutionPolicy,
+    Planner,
+    RegistryPlanner,
+    RuleBasedTaskRouter,
+    TaskRouter,
+)
 from app.services.agent_skills import SkillRegistry
 from app.services.agent_tools import ToolRegistry
 
@@ -27,29 +35,59 @@ class AgentRuntime:
         repository: AgentRunRepository,
         skills: SkillRegistry,
         tools: ToolRegistry,
+        router: TaskRouter | None = None,
+        planner: Planner | None = None,
+        policy: ExecutionPolicy | None = None,
     ) -> None:
         self._repository = repository
         self._skills = skills
         self._tools = tools
+        self._router = router or RuleBasedTaskRouter(skills)
+        self._planner = planner or RegistryPlanner(skills, tools)
+        self._policy = policy or ExecutionPolicy(tools)
 
     def preview(
         self,
         objective: str,
-        skill_name: str,
+        skill_name: str | None,
         inputs: dict[str, Any],
     ) -> AgentRun:
-        actions = self._skills.get(skill_name).plan(objective, inputs)
+        route = self._router.route(
+            objective=objective,
+            inputs=inputs,
+            requested_skill=skill_name,
+        )
+        actions = self._planner.plan(
+            objective=objective,
+            skill_name=route.skill_name,
+            inputs=inputs,
+        )
+        status = self._policy.apply(actions)
         run = AgentRun(
             id=str(uuid4()),
             objective=objective,
-            skill_name=skill_name,
-            status=AgentRunStatus.AWAITING_CONFIRMATION,
+            skill_name=route.skill_name,
+            status=status,
             actions=actions,
             events=[
                 self._event(
+                    "route_selected",
+                    (
+                        f"Selected skill {route.skill_name} "
+                        f"(confidence {route.confidence:.2f}): {route.reason}"
+                    ),
+                ),
+                self._event(
+                    "plan_created",
+                    f"Planner produced {len(actions)} validated action(s).",
+                ),
+                self._event(
                     "preview_created",
-                    f"Created a preview with {len(actions)} planned action(s).",
-                )
+                    (
+                        f"Created a preview with {len(actions)} planned action(s). "
+                        f"Status: {status.value}."
+                    ),
+                ),
             ],
         )
         self._repository.save(run)
@@ -59,10 +97,14 @@ class AgentRuntime:
         run = self._repository.get(run_id)
         if run is None:
             raise AgentRunNotFoundError(f"agent run not found: {run_id}")
+        self._refresh_action_risks(run)
         return run
 
     def list_runs(self) -> list[AgentRun]:
-        return self._repository.list_runs()
+        runs = self._repository.list_runs()
+        for run in runs:
+            self._refresh_action_risks(run)
+        return runs
 
     def list_skills(self) -> list[dict[str, str]]:
         return [
@@ -72,7 +114,11 @@ class AgentRuntime:
 
     def list_tools(self) -> list[dict[str, str]]:
         return [
-            {"name": tool.name, "description": tool.description}
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "risk_level": getattr(tool, "risk_level", ToolRisk.WRITE).value,
+            }
             for tool in self._tools.list_tools()
         ]
 
@@ -133,7 +179,10 @@ class AgentRuntime:
             run.events.append(
                 self._event(
                     "tool_started",
-                    f"Started tool: {action.tool_name} (attempt {action.attempt_count})",
+                    (
+                        f"Started tool: {action.tool_name} "
+                        f"(attempt {action.attempt_count}, risk {action.risk_level.value})"
+                    ),
                 )
             )
             self._save(run)
@@ -170,6 +219,15 @@ class AgentRuntime:
         run.events.append(self._event("run_completed", "Run completed."))
         self._save(run)
         return run
+
+    def _refresh_action_risks(self, run: AgentRun) -> None:
+        for action in run.actions:
+            try:
+                tool = self._tools.get(action.tool_name)
+            except LookupError:
+                action.risk_level = ToolRisk.WRITE
+                continue
+            action.risk_level = getattr(tool, "risk_level", ToolRisk.WRITE)
 
     def _save(self, run: AgentRun) -> None:
         run.updated_at = datetime.now(UTC)

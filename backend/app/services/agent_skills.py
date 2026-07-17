@@ -163,3 +163,28 @@ class HRRecruitingSkill:
             preview=preview,
             requires_approval=True,
         )
+
+
+class MCPToolSkill:
+    name = "mcp_tool"
+    description = "Plan an approved call to a discovered MCP tool."
+
+    def __init__(self, allowed_tools: set[str]) -> None:
+        self._allowed_tools = allowed_tools
+
+    def plan(self, objective: str, inputs: dict[str, Any]) -> list[AgentAction]:
+        tool_name = inputs.get("tool_name")
+        arguments = inputs.get("arguments", {})
+        if not isinstance(tool_name, str) or tool_name not in self._allowed_tools:
+            raise SkillInputError("tool_name must identify a discovered MCP tool")
+        if not isinstance(arguments, dict):
+            raise SkillInputError("MCP tool arguments must be an object")
+        return [
+            AgentAction(
+                id=str(uuid4()),
+                tool_name=tool_name,
+                arguments=arguments,
+                preview=f"Call external MCP tool {tool_name}: {objective}",
+                requires_approval=True,
+            )
+        ]

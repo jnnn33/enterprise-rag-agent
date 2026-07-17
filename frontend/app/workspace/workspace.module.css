@@ -20,6 +20,10 @@
   line-height: 1.45;
 }
 
+.form :global(.select) {
+  font-size: 11px;
+}
+
 .hrFields {
   display: grid;
   gap: 11px;
@@ -291,4 +295,63 @@
   .runPanel {
     min-height: 0;
   }
+}
+
+.risk {
+  display: inline-flex;
+  min-height: 20px;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: 5px;
+  font-size: 9px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.riskRead {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.riskWrite {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.riskExternal {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.providerList {
+  display: grid;
+  padding: 7px 12px;
+}
+
+.providerList > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.providerList > div:last-child {
+  border-bottom: 0;
+}
+
+.providerList strong,
+.providerList small {
+  display: block;
+}
+
+.providerList strong {
+  font-size: 10px;
+}
+
+.providerList small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 9px;
 }
